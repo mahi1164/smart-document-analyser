@@ -61,10 +61,19 @@ async def upload_documents(
         full_text += "\n\n" + text  # Separate documents with newlines
     
     if not full_text.strip():
-        raise HTTPException(status_code=400, detail="No text extracted from uploaded files")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No text could be extracted from the uploaded PDF(s). "
+                "If the file is scanned or image-only, configure OPENROUTER_API_KEY "
+                "to enable OCR fallback in the backend."
+            ),
+        )
     
     # Chunk the combined text
     chunks = chunk_text(full_text)
+    if not chunks:
+        chunks = [full_text.strip()]
     
     # Store in session
     session_store[session_id] = chunks

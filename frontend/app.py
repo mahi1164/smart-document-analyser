@@ -70,7 +70,7 @@ def upload_files(files):
             st.session_state.uploaded = True
             return True
     except requests.exceptions.RequestException as exc:
-        st.error(f"Upload failed: {exc}")
+        st.error(f"Upload failed: {_format_request_error(exc)}")
         return False
 
 
@@ -87,8 +87,26 @@ def ask_question(question):
             response.raise_for_status()
             return response.json()
     except requests.exceptions.RequestException as exc:
-        st.error(f"Error getting answer: {exc}")
+        st.error(f"Error getting answer: {_format_request_error(exc)}")
         return None
+
+
+def _format_request_error(exc):
+    """Return a readable API error message when the backend sends JSON details."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+
+    try:
+        data = response.json()
+    except ValueError:
+        return str(exc)
+
+    detail = data.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        return detail
+
+    return str(exc)
 
 
 def update_analytics(score):
