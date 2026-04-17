@@ -76,9 +76,15 @@ Instructions:
 - Keep the answer concise but complete
 - Use bullet points if listing multiple items"""
 
+    fallback_answer = _extract_answer_locally(
+        question,
+        relevant_chunks["chunks"],
+        relevant_chunks["indices"],
+    )
+
     try:
         if not OPENROUTER_API_KEY:
-            raise RuntimeError("OPENROUTER_API_KEY is not configured")
+            return fallback_answer
 
         # Make API call to OpenRouter using requests
         headers = {
@@ -105,13 +111,12 @@ Instructions:
         answer_text = result["choices"][0]["message"]["content"].strip()
 
         # Check if the model couldn't find an answer
-        if "cannot find" in answer_text.lower() or "not available" in answer_text.lower() or "not found" in answer_text.lower():
-            return {
-                "answer": None,
-                "score": 0.0,
-                "chunk_index": -1,
-                "source_text": ""
-            }
+        if (
+            "cannot find" in answer_text.lower()
+            or "not available" in answer_text.lower()
+            or "not found" in answer_text.lower()
+        ):
+            return fallback_answer
 
         # Calculate confidence score based on answer length and specificity
         # Longer, more detailed answers typically have higher confidence
@@ -130,12 +135,7 @@ Instructions:
 
     except Exception as e:
         print(f"Error calling OpenRouter API: {e}")
-        return {
-            "answer": None,
-            "score": 0.0,
-            "chunk_index": -1,
-            "source_text": ""
-        }
+        return fallback_answer
 
 
 def _get_relevant_chunks(question: str, chunks: List[str], top_k: int = 3) -> Dict[str, Any]:
@@ -178,6 +178,93 @@ def _get_relevant_chunks(question: str, chunks: List[str], top_k: int = 3) -> Di
         "chunks": chunk_texts,
         "indices": indices
     }
+
+
+def _extract_answer_locally(
+    question: str,
+    relevant_chunks: List[str],
+    relevant_indices: List[int],
+) -> Dict[str, Any]:
+    """
+    Lightweight local fallback when the LLM is unavailable.
+    Picks the most relevant sentence from the top candidate chunks.
+    """
+    if not relevant_chunks:
+        return {
+            "answer": None,
+            "score": 0.0,
+            "chunk_index": -1,
+            "source_text": "",
+        }
+
+    question_terms = _extract_query_terms(question)
+    best_match = None
+
+    for position, chunk in enumerate(relevant_chunks):
+        sentences = re.split(r"(?<=[.!?])\s+|\n+", chunk)
+        candidates = [sentence.strip() for sentence in sentences if sentence.strip()]
+        if not candidates:
+            candidates = [chunk.strip()]
+
+        for sentence in candidates:
+            score = _score_text_match(question_terms, sentence)
+            if not best_match or score > best_match["score"]:
+                best_match = {
+                    "answer": sentence,
+                    "score": score,
+                    "chunk_index": (
+                        relevant_indices[position]
+                        if position < len(relevant_indices)
+                        else -1
+                    ),
+                    "source_text": chunk,
+                }
+
+    if not best_match or best_match["score"] <= 0:
+        best_chunk = relevant_chunks[0].strip()
+        if len(best_chunk) > 280:
+            best_chunk = best_chunk[:277].rstrip() + "..."
+        return {
+            "answer": best_chunk if best_chunk else None,
+            "score": 0.15 if best_chunk else 0.0,
+            "chunk_index": relevant_indices[0] if relevant_indices else -1,
+            "source_text": relevant_chunks[0] if relevant_chunks else "",
+        }
+
+    normalized_score = min(0.89, 0.25 + (best_match["score"] / 6))
+    best_match["score"] = normalized_score
+    return best_match
+
+
+def _extract_query_terms(question: str) -> List[str]:
+    """Extract meaningful search terms from the question."""
+    stop_words = {
+        "what", "how", "why", "when", "where", "who", "is", "are", "the", "a",
+        "an", "and", "or", "in", "at", "to", "for", "of", "by", "on", "does",
+        "do", "did", "was", "were", "can", "could", "should", "would", "about",
+        "from", "with", "tell", "me", "explain",
+    }
+    return [
+        word
+        for word in re.findall(r"[A-Za-z0-9]+", question.lower())
+        if word not in stop_words and len(word) > 2
+    ]
+
+
+def _score_text_match(question_terms: List[str], text: str) -> float:
+    """Simple relevance score based on keyword overlap and phrase presence."""
+    if not text.strip():
+        return 0.0
+
+    lowered = text.lower()
+    if not question_terms:
+        return 0.1 if lowered else 0.0
+
+    unique_terms = set(question_terms)
+    overlap = sum(1 for term in unique_terms if term in lowered)
+    density_bonus = overlap / max(1, len(unique_terms))
+    exact_bonus = 1.5 if " ".join(question_terms[:3]) in lowered and len(question_terms) >= 3 else 0
+    return overlap + density_bonus + exact_bonus
 
 
 def _clean_answer_text(text: str) -> str:
